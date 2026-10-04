@@ -1,0 +1,8 @@
+[project]
+name = "retail-rocket-streaming"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = ["kafka-python==2.2.17"]
+
+[tool.uv]
+package = false

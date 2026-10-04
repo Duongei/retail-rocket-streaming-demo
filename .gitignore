@@ -1,0 +1,10 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+data/*
+!data/events_sorted.csv
+

@@ -1,0 +1,23 @@
+version = 1
+revision = 3
+requires-python = "==3.11.*"
+
+[[package]]
+name = "kafka-python"
+version = "2.2.17"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/48/8229be403f0d781be741edf48f2764a25d85be0858e7c617c6504234912f/kafka_python-2.2.17.tar.gz", hash = "sha256:8080e8c1f08004b551d4ad1fdf4cf3e537ec656b9e05ab2b2b2623d63c058279", size = 348884, upload-time = "2025-11-20T20:51:53.489Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/7a/ef0f4af9dcbdd81a0e1c30a7ae71d1f6c03a515f45374a33f9a17354669f/kafka_python-2.2.17-py2.py3-none-any.whl", hash = "sha256:2e2ba7d2d2348907fbcb69321a5af41f26e08f0150e5183063718bcbe9ec56f8", size = 310216, upload-time = "2025-11-20T20:51:52.072Z" },
+]
+
+[[package]]
+name = "retail-rocket-streaming"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "kafka-python" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "kafka-python", specifier = "==2.2.17" }]
