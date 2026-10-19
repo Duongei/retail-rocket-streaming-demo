@@ -5,3 +5,7 @@
 .env
 .env.*
 data
+output
+notebooks
+docs
+tests

@@ -65,7 +65,9 @@ services:
       DYNAMIC_CONFIG_ENABLED: "true"
 
   producer:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -82,11 +84,70 @@ services:
       RATE: ${RATE:-10}
       PROGRESS_EVERY: ${PROGRESS_EVERY:-100}
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-15}
+      REORDER_BUFFER: ${REORDER_BUFFER:-0}
+      REORDER_SEED: ${REORDER_SEED:-7}
     volumes:
-      - ./producer.py:/app/producer.py:ro
-      - ./data:/app/data:ro
+      - ../data:/app/data:ro
+
+  spark-streaming:
+    image: apache/spark:3.5.5
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      spark-checkpoint-init:
+        condition: service_completed_successfully
+      candidate-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-retail-rocket-events}
+      STARTING_OFFSETS: ${STARTING_OFFSETS:-earliest}
+      OUTPUT_PATH: /app/output
+      CHECKPOINT_PATH: /app/checkpoints/intent
+      SESSION_CHECKPOINT_PATH: /app/checkpoints/sessions
+      CONSOLE_CHECKPOINT_PATH: /app/checkpoints/console
+      RAW_CHECKPOINT_PATH: /app/checkpoints/raw_events
+      ARCHIVE_RAW_EVENTS: ${ARCHIVE_RAW_EVENTS:-1}
+      SESSION_GAP: ${SESSION_GAP:-30 minutes}
+      WINDOW_DURATION: ${WINDOW_DURATION:-10 minutes}
+      SLIDE_DURATION: ${SLIDE_DURATION:-5 minutes}
+      WATERMARK: ${WATERMARK:-5 minutes}
+      INTENT_THRESHOLD: ${INTENT_THRESHOLD:-5}
+      TRIGGER_SECONDS: ${TRIGGER_SECONDS:-5}
+      MAX_OFFSETS_PER_TRIGGER: ${MAX_OFFSETS_PER_TRIGGER:-0}
+      CANDIDATES_PATH: /app/data/item_candidates.csv
+      SPARK_LOCAL_IP: 127.0.0.1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mkdir -p /tmp/spark-ivy && exec /opt/spark/bin/spark-submit --master 'local[2]' --conf spark.jars.ivy=/tmp/spark-ivy --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5 /app/src/streaming_etl.py
+    volumes:
+      - ../src:/app/src:ro
+      - ../data:/app/data:ro
+      - ../tests:/app/tests:ro
+      - ${OUTPUT_HOST_DIR:-../output}:/app/output
+      - spark-checkpoints:/app/checkpoints
+
+  candidate-init:
+    image: python:3.11-slim-bookworm
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - test -s /app/data/item_candidates.csv || python /app/build_candidates.py --input /app/data/events_sorted.csv --output /app/data/item_candidates.csv
+    volumes:
+      - ../src/build_candidates.py:/app/build_candidates.py:ro
+      - ../data:/app/data
+
+  spark-checkpoint-init:
+    image: alpine:3.20
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R 185:0 /checkpoints"]
+    volumes:
+      - spark-checkpoints:/checkpoints
 
 
 volumes:
   kafka-data:
+  spark-checkpoints:
 
