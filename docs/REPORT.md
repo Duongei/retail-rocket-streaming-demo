@@ -1,23 +1,23 @@
-# Báo cáo dự án: Theo dõi phiên và gợi ý sản phẩm theo thời gian thực
+# Theo dõi phiên và gợi ý sản phẩm theo thời gian thực
 
 ## 1. Mục tiêu và phạm vi
 
-Dự án dùng dữ liệu Retail Rocket để minh họa một pipeline xử lý luồng: phát lại hành vi người dùng vào Kafka, tính điểm quan tâm bằng Spark Structured Streaming, đề xuất một sản phẩm liên quan và ghi lại các phiên truy cập. Đây là bản demo cục bộ để học về phân vùng Kafka, micro-batch, thời gian sự kiện, watermark và checkpoint; dự án chưa đánh giá chất lượng gợi ý như một sản phẩm thương mại.
+Dự án dùng dữ liệu Retail Rocket để mô phỏng lại một pipeline xử lý luồng: phát lại hành vi người dùng vào Kafka, tính điểm quan tâm bằng Spark Structured Streaming, đề xuất một sản phẩm liên quan và ghi lại các phiên truy cập. Đây là bản demo cục bộ để học về phân vùng Kafka, micro-batch, thời gian sự kiện, watermark và checkpoint; dự án chưa đánh giá chất lượng gợi ý như một sản phẩm thương mại.
 
-Tệp `data/events_sorted.csv` gồm 2.756.102 dòng tính cả header, tức 2.756.101 sự kiện. Mỗi sự kiện có `timestamp` theo Unix milliseconds, `visitorid`, `event`, `itemid` và `transactionid`. `visitorid` là mã khách truy cập trong bộ dữ liệu; một mã có thể xuất hiện ở nhiều phiên, nhưng không chứng minh được danh tính khách hàng ngoài bộ dữ liệu.
+Tệp `data/events_sorted.csv` gồm 2.756.102 dòng tính cả header, tức 2.756.101 sự kiện. Mỗi sự kiện có `timestamp` theo Unix milliseconds, `visitorid`, `event`, `itemid` và `transactionid`.  Trong đó`visitorid` là mã khách truy cập trong bộ dữ liệu; một mã có thể xuất hiện ở nhiều phiên, nhưng không chứng minh được danh tính khách hàng ngoài bộ dữ liệu.
 
 ## 2. Đối chiếu yêu cầu với phần triển khai
 
-| Yêu cầu | Cách dự án thực hiện |
-|---|---|
-| Nguồn sự kiện liên tục | `src/producer.py` đọc CSV và gửi JSON lên Kafka theo tốc độ có thể điều chỉnh; `SKIP` và `LIMIT` chọn đoạn dữ liệu để phát. |
+| Yêu cầu                              | Cách dự án thực hiện                                                                                                                                                                                                                    |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nguồn sự kiện liên tục            | `src/producer.py` đọc CSV và gửi JSON lên Kafka theo tốc độ có thể điều chỉnh; `SKIP` và `LIMIT` chọn đoạn dữ liệu để phát.                                                                                      |
 | Kafka có khả năng xử lý song song | `docker/docker-compose.yml` tạo topic mặc định ba phân vùng trên một Kafka broker KRaft. Key `visitorid` giữ các thông điệp cùng khách trong một phân vùng; số phân vùng giới hạn mức song song khi đọc topic. |
-| Đọc Kafka bằng Spark | `src/streaming_etl.py` dùng Kafka source, schema JSON rõ ràng, chuyển `timestamp` sang `event_time` và lọc sự kiện không hợp lệ. |
-| Cửa sổ thời gian sự kiện | Mặc định cửa sổ 10 phút trượt 5 phút và watermark 5 phút; cấu hình qua `.env`. |
-| Điểm quan tâm và gợi ý | Điểm `view=1`, `addtocart=5`, `transaction=10`. Phải đạt ngưỡng, có thêm vào giỏ, chưa mua sản phẩm quan tâm; gợi ý lấy từ `data/item_candidates.csv` và lọc ứng viên đã mua. |
-| Nhận diện phiên | Truy vấn riêng dùng khoảng không hoạt động 30 phút cho từng `visitorid`, ghi số hành vi và thời điểm đầu/cuối phiên khi watermark cho phép đóng. |
-| Đầu ra, log và khôi phục | Ghi Parquet, JSON, số liệu batch và console; ba truy vấn chính có checkpoint độc lập. Có manifest offset; bật `ARCHIVE_RAW_EVENTS=1` để chạy thêm truy vấn lưu Kafka thô. |
-| Hướng dẫn và kiểm tra | `README.md` hướng dẫn chạy; `tests/test_streaming_etl.py` kiểm tra phân tích JSON và logic điểm cơ bản. |
+| Đọc Kafka bằng Spark                | `src/streaming_etl.py` dùng Kafka source, schema JSON rõ ràng, chuyển `timestamp` sang `event_time` và lọc sự kiện không hợp lệ.                                                                                            |
+| Cửa sổ thời gian sự kiện          | Mặc định cửa sổ 10 phút trượt 5 phút và watermark 5 phút; cấu hình qua `.env`.                                                                                                                                                |
+| Điểm quan tâm và gợi ý           | Điểm `view=1`, `addtocart=5`, `transaction=10`. Phải đạt ngưỡng, có thêm vào giỏ, chưa mua sản phẩm quan tâm; gợi ý lấy từ `data/item_candidates.csv` và lọc ứng viên đã mua.                               |
+| Nhận diện phiên                     | Truy vấn riêng dùng khoảng không hoạt động 30 phút cho từng `visitorid`, ghi số hành vi và thời điểm đầu/cuối phiên khi watermark cho phép đóng.                                                                    |
+| Đầu ra, log và khôi phục          | Ghi Parquet, JSON, số liệu batch và console; ba truy vấn chính có checkpoint độc lập. Có manifest offset; bật `ARCHIVE_RAW_EVENTS=1` để chạy thêm truy vấn lưu Kafka thô.                                                |
+| Hướng dẫn và kiểm tra             | `README.md` hướng dẫn chạy; `tests/test_streaming_etl.py` kiểm tra phân tích JSON và logic điểm cơ bản.                                                                                                                      |
 
 ## 3. Kiến trúc và luồng dữ liệu
 
@@ -65,13 +65,13 @@ Trong mỗi batch, Spark loại sản phẩm quan tâm đã mua, loại ứng vi
 
 ### Vì sao chọn Kafka thay vì Flume
 
-| Tiêu chí | Kafka trong dự án | Flume |
-|---|---|---|
-| Mô hình | Log sự kiện lưu theo topic và phân vùng; producer và consumer tách rời. | Luồng thu thập dựa trên agent với source, channel và sink. |
-| Đọc lại | Spark có thể đọc lại offsets còn trong thời hạn lưu trữ của topic. | Channel chủ yếu làm bộ đệm chuyển sự kiện, không phục vụ cùng kiểu đọc lại log nhiều consumer. |
-| Song song | Phân vùng chia tải; thứ tự được bảo đảm trong từng phân vùng. | Chia tải theo cấu hình các agent/channel/sink. |
-| Tích hợp với Spark | Có Kafka source và connector chuyên dụng. | Thường cần thêm đường chuyển dữ liệu hoặc hệ trung gian. |
-| Vận hành | Cần quản lý broker, topic, retention và phân vùng. | Phù hợp hơn với bài toán thu thập/chuyển tiếp log. |
+| Tiêu chí            | Kafka trong dự án                                                              | Flume                                                                                                            |
+| --------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Mô hình             | Log sự kiện lưu theo topic và phân vùng; producer và consumer tách rời. | Luồng thu thập dựa trên agent với source, channel và sink.                                                 |
+| Đọc lại            | Spark có thể đọc lại offsets còn trong thời hạn lưu trữ của topic.    | Channel chủ yếu làm bộ đệm chuyển sự kiện, không phục vụ cùng kiểu đọc lại log nhiều consumer. |
+| Song song             | Phân vùng chia tải; thứ tự được bảo đảm trong từng phân vùng.      | Chia tải theo cấu hình các agent/channel/sink.                                                               |
+| Tích hợp với Spark | Có Kafka source và connector chuyên dụng.                                    | Thường cần thêm đường chuyển dữ liệu hoặc hệ trung gian.                                             |
+| Vận hành            | Cần quản lý broker, topic, retention và phân vùng.                         | Phù hợp hơn với bài toán thu thập/chuyển tiếp log.                                                      |
 
 Kafka dùng KRaft để quản lý metadata thay cho ZooKeeper. Cấu hình trong dự án chỉ có một broker/controller và replication factor 1, nên không có tính sẵn sàng cao. Xem [tài liệu Kafka](https://kafka.apache.org/documentation/) và [tài liệu tích hợp Spark–Kafka](https://spark.apache.org/docs/3.5.8/structured-streaming-kafka-integration.html).
 

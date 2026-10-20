@@ -1,5 +1,13 @@
 # Luồng dữ liệu và cách pipeline xử lý khi chạy
 
+## Lệnh chạy kích hoạt những gì
+
+Lệnh demo chuẩn là `sh scripts/demo.sh start` từ thư mục gốc. Script đọc `SO_DONG` trong `.env`, tạo Compose project/output riêng, đặt `SKIP=0` và `LIMIT=SO_DONG`, sau đó gọi `docker compose --env-file .env ... up --build -d`. Trạng thái project và output gần nhất được lưu trong `.demo_last_run`; các lệnh `logs`, `status`, `count`, `batch`, `append`, `down` trong cùng script dùng thông tin này để thao tác đúng lần chạy.
+
+Compose định nghĩa thứ tự khởi động trong `docker/docker-compose.yml`: Kafka phải khỏe trước khi `kafka-init` tạo topic; `candidate-init` tạo bảng ứng viên nếu chưa tồn tại; `spark-checkpoint-init` chuẩn bị quyền volume checkpoint; `producer` đợi topic; Spark đợi topic, candidates và checkpoint rồi chạy `spark-submit ... /app/src/streaming_etl.py`. Spark khởi chạy các truy vấn trong `main`: điểm (`intent`), phiên (`sessions`), console và lưu thô (`raw_events`) nếu `ARCHIVE_RAW_EVENTS=1`. Biến trong `.env` được Compose chuyển thành môi trường container. `demo.sh start` ghi đè `SKIP`, `LIMIT`, `OUTPUT_HOST_DIR`; `append SKIP LIMIT` chỉ tạo lại producer với đoạn CSV được chỉ định.
+
+Chi tiết cú pháp lệnh và bảng cấu hình đầy đủ nằm trong [README](../README.md#script-điều-khiển-lần-chạy) và [README – cấu hình](../README.md#cấu-hình-kết-quả-và-kiểm-tra).
+
 ```mermaid
 flowchart LR
   CSV[events_sorted.csv] --> P[Producer Python]
@@ -51,16 +59,16 @@ Tệp phiên có `event_count`, số lần từng loại hành vi, `first_event_
 
 ## 5. Đầu ra và khả năng khôi phục
 
-| Vị trí trong thư mục `OUTPUT_HOST_DIR` | Nội dung |
-|---|---|
-| `intent/batch_id=...` | Bản cập nhật tổng hợp Parquet, chia thêm theo `event_date`. Muốn lấy trạng thái mới nhất của một khóa cửa sổ cần chọn `batch_id` lớn nhất. |
-| `recommendations/batch_id=...` | Gợi ý JSON theo batch. |
-| `purchases/batch_id=...` | Cặp khách/sản phẩm đã mua theo batch, dùng để lọc những gợi ý về sau. |
-| `recommendation_history/batch_id=...` | Các gợi ý đã xuất, dùng để chống lặp. |
-| `sessions/batch_id=...` | Các phiên đã đóng, định dạng Parquet. |
-| `micro_batches/batch_id=....json` | Số dòng tổng hợp được cập nhật, thời gian callback và thời điểm hoàn thành; không phải số sự kiện Kafka đầu vào. |
-| `raw_events/batch_id=...` | Bản ghi Kafka thô dạng Parquet, gồm JSON gốc, trường đã phân tích, partition, offset và batch ID của truy vấn lưu thô. |
-| `intent_input_offsets/batch_id=....json` | Khoảng offset và `num_input_rows` của batch tính điểm; dùng để tra đầu vào thực tế. |
+| Vị trí trong thư mục `OUTPUT_HOST_DIR` | Nội dung                                                                                                                                                           |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intent/batch_id=...`                      | Bản cập nhật tổng hợp Parquet, chia thêm theo `event_date`. Muốn lấy trạng thái mới nhất của một khóa cửa sổ cần chọn `batch_id` lớn nhất. |
+| `recommendations/batch_id=...`             | Gợi ý JSON theo batch.                                                                                                                                            |
+| `purchases/batch_id=...`                   | Cặp khách/sản phẩm đã mua theo batch, dùng để lọc những gợi ý về sau.                                                                                 |
+| `recommendation_history/batch_id=...`      | Các gợi ý đã xuất, dùng để chống lặp.                                                                                                                    |
+| `sessions/batch_id=...`                    | Các phiên đã đóng, định dạng Parquet.                                                                                                                      |
+| `micro_batches/batch_id=....json`          | Số dòng tổng hợp được cập nhật, thời gian callback và thời điểm hoàn thành; không phải số sự kiện Kafka đầu vào.                            |
+| `raw_events/batch_id=...`                  | Bản ghi Kafka thô dạng Parquet, gồm JSON gốc, trường đã phân tích, partition, offset và batch ID của truy vấn lưu thô.                              |
+| `intent_input_offsets/batch_id=....json`   | Khoảng offset và `num_input_rows` của batch tính điểm; dùng để tra đầu vào thực tế.                                                                 |
 
 Ba truy vấn chính có checkpoint độc lập trong Docker volume: `intent`, `sessions` và `console`. Khi `ARCHIVE_RAW_EVENTS=1`, truy vấn lưu thô thứ tư có checkpoint `raw_events` và đọc Kafka riêng, nên batch ID của nó **không tương ứng** với batch ID của truy vấn điểm. Listener lưu offset bắt đầu/kết thúc của từng batch điểm; `src/inspect_batch.py` dùng các khoảng offset này để tìm bản ghi trong kho thô. Với batch đầu tiên nếu tiến độ Spark không có start offset, công cụ thử đọc offset ban đầu từ checkpoint `intent`. Kafka end offset là cận trên không bao gồm. Các tệp mới chỉ tồn tại sau khi chạy mã mới.
 
@@ -68,11 +76,11 @@ Checkpoint giữ offsets và trạng thái Spark. Ghi đè tệp theo `batch_id`
 
 ## Ví dụ qua nhiều batch
 
-| Batch | Hành vi trong cùng cửa sổ của V001 với A | Điểm | Kết quả |
-|---:|---|---:|---|
-| 0 | Xem A | 1 | Chưa đủ điều kiện. |
-| 1 | Xem A lần nữa | 2 | Chưa đủ điều kiện. |
-| 2 | Thêm A vào giỏ | 7 | Đủ điều kiện nếu A chưa mua và có ứng viên hợp lệ. |
-| 3 | Mua A | 17 | Lịch sử mua chặn gợi ý tiếp theo cho A. |
+| Batch | Hành vi trong cùng cửa sổ của V001 với A | Điểm | Kết quả                                                       |
+| ----: | ---------------------------------------------- | -----: | --------------------------------------------------------------- |
+|     0 | Xem A                                          |      1 | Chưa đủ điều kiện.                                        |
+|     1 | Xem A lần nữa                                |      2 | Chưa đủ điều kiện.                                        |
+|     2 | Thêm A vào giỏ                              |      7 | Đủ điều kiện nếu A chưa mua và có ứng viên hợp lệ. |
+|     3 | Mua A                                          |     17 | Lịch sử mua chặn gợi ý tiếp theo cho A.                   |
 
 Mỗi cửa sổ chồng nhau có điểm riêng; bảng ví dụ chỉ mô tả **một** cửa sổ.
