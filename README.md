@@ -19,7 +19,6 @@ data/events_sorted.csv → producer → Kafka (3 phân vùng) → Spark Structur
                                                        ├─ output/intent/          : điểm quan tâm (Parquet)
                                                        ├─ output/recommendations/ : gợi ý (JSON)
                                                        ├─ output/sessions/        : phiên đã đóng (Parquet)
-                                                       ├─ output/purchases/       : lịch sử sản phẩm đã mua
                                                        ├─ output/recommendation_history/ : lịch sử gợi ý
                                                        ├─ output/raw_events/     : sự kiện Kafka thô (Parquet)
                                                        ├─ output/intent_input_offsets/ : offset đầu vào batch điểm
@@ -32,7 +31,7 @@ Các chức năng hiện có:
 - Phát lại hành vi `view`, `addtocart` và `transaction` từ CSV theo tốc độ cố định hoặc theo khoảng cách thời gian giữa sự kiện; có thể chọn vị trí bắt đầu và số dòng cần phát.
 - Tạo chủ đề Kafka với ba phân vùng và xem thông điệp qua Kafka UI.
 - Dùng thời gian sự kiện, watermark và cửa sổ trượt để tính điểm quan tâm cho từng cặp khách truy cập/sản phẩm.
-- Đề xuất sản phẩm từ bảng ứng viên đồng xem và sản phẩm phổ biến; loại sản phẩm đã mua trước khi xếp hạng gợi ý.
+- Đề xuất một ứng viên cố định từ bảng top 1 đồng xem hoặc phổ biến; không lọc mua hàng, giữ lịch sử chống gợi ý lặp.
 - Gom sự kiện của từng `visitorid` thành phiên theo khoảng ngắt hoạt động; ghi phiên khi watermark cho phép đóng phiên.
 - Ghi kết quả ra tệp, lưu checkpoint cho ba truy vấn chính; khi bật `ARCHIVE_RAW_EVENTS=1`, truy vấn thứ tư lưu sự kiện Kafka thô. Khoảng offset giúp tra lại đầu vào batch tính điểm.
 
@@ -47,7 +46,7 @@ Xem [báo cáo đối chiếu yêu cầu](docs/AUDIT_REPORT.md), [luồng xử l
 | `docker/docker-compose.yml`                      | Khai báo Kafka, dịch vụ tạo topic, Kafka UI, producer, dịch vụ tạo ứng viên, Spark và các volume.                         |
 | `docker/Dockerfile`                              | Tạo image Python chạy producer và cài các thư viện cần thiết.                                                               |
 | `data/events_sorted.csv`                         | Dữ liệu đầu vào đã sắp theo thời gian; khoảng 2,75 triệu sự kiện Retail Rocket.                                         |
-| `data/item_candidates.csv`                       | Bảng ứng viên gợi ý được tạo tự động nếu chưa có; không phải nhãn đánh giá chính xác của mô hình.          |
+| `data/item_candidates.csv`                       | Bảng top 1 được tạo tự động nếu chưa có hoặc bảng cũ chứa nhiều ứng viên cho một sản phẩm; không phải nhãn đánh giá chính xác của mô hình.          |
 | `src/producer.py`                                | Đọc CSV, bỏ qua `SKIP` dòng, gửi tối đa `LIMIT` sự kiện lên Kafka và điều tiết tốc độ phát lại.               |
 | `src/build_candidates.py`                        | Tạo các cặp sản phẩm đồng xem từ 500.000 dòng đầu, quét toàn bộ dữ liệu để bổ sung ứng viên dự phòng.         |
 | `src/streaming_etl.py`                           | Đọc Kafka, tính điểm trong cửa sổ trượt, lọc và ghi gợi ý, theo dõi giao dịch, xác định phiên và ghi thống kê. |
@@ -86,15 +85,19 @@ Ba khái niệm dễ nhầm:
 - **Phiên:** Spark suy ra từ chuỗi sự kiện của cùng `visitorid`; khoảng cách không hoạt động `30 minutes` tạo ranh giới phiên. Một khách có thể có nhiều phiên.
 - **Cửa sổ tính điểm:** cửa sổ trượt `10 minutes`, dịch mỗi `5 minutes`. Một sự kiện có thể đóng góp vào nhiều cửa sổ. Cửa sổ này không đồng nghĩa với phiên.
 
-Điểm hành vi hiện tại: `view = 1`, `addtocart = 5`, `transaction = 10`. Một cặp khách/sản phẩm được xét gợi ý khi điểm đạt ngưỡng (mặc định `5`), đã có ít nhất một lần thêm vào giỏ và chưa quan sát thấy giao dịch cho cặp đó. Bảng `item_candidates.csv` chọn các sản phẩm liên quan theo đồng xem, kèm phương án dự phòng theo độ phổ biến. Nếu không còn ứng viên phù hợp, hệ thống không xuất gợi ý.
+Điểm hành vi hiện tại: `view = 1`, `addtocart = 5`, `transaction = 10`. Một nhóm khách/sản phẩm/cửa sổ được xét gợi ý khi điểm đạt ngưỡng (mặc định `5`), kể cả chỉ xem hoặc đã mua. Lịch sử chống lặp theo bộ ba `(visitorid, interested_itemid, recommended_itemid)` xuyên batch, cửa sổ và phiên trong cùng output. Bảng `item_candidates.csv` chọn các sản phẩm liên quan theo đồng xem, kèm phương án dự phòng theo độ phổ biến. Nếu không còn ứng viên phù hợp, hệ thống không xuất gợi ý.
 
 Watermark mặc định là `5 minutes` theo **thời gian sự kiện**. Sự kiện đến quá muộn có thể bị loại khỏi phép tổng hợp; phiên chỉ được ghi khi Spark thấy watermark đã đi qua cuối phiên. Vì vậy một phiên đang mở có thể chưa xuất hiện ngay trong `sessions/`, kể cả khi producer đã gửi xong dữ liệu.
 
 ## Hướng dẫn chạy dự án
 
+Phiên bản hiện tại chỉ xét điểm đạt ngưỡng, dùng một ứng viên cố định và giữ lịch sử gợi ý xuyên batch/cửa sổ/phiên. Không còn ghi `purchases/`. Đây là lựa chọn nghiệp vụ mới, thay cho điều kiện thêm giỏ và chưa mua của đề bài ban đầu.
+
+Khi chuyển từ bảng top 5, dừng Spark trước khi tạo lại ứng viên. `candidate-init` tự nhận diện bảng nhiều ứng viên và tạo lại top 1; bảng top 1 có sẵn được tái sử dụng. Khi đổi dữ liệu nguồn hoặc thuật toán, chạy builder không có `--ensure-top-one` để buộc tạo lại. Output cũ được giữ nguyên; một lần `start` mới tạo lịch sử gợi ý mới, còn chạy tiếp với cùng output sẽ giữ lịch sử chống lặp.
+
 Các lệnh dưới đây chạy từ **thư mục gốc dự án**. Mỗi lần dùng `start`, script tạo một lần chạy và một thư mục `output_...` mới; kết quả của những lần trước vẫn được giữ lại.
 
-Nếu muốn chạy full file CSV thì set `SO_DONG=2756101` trong env.
+Nếu muốn chạy full file CSV thì set `SO_DONG=2755641` trong env.
 
 ### 1. Kiểm tra điều kiện cần thiết
 
@@ -189,7 +192,6 @@ Trong thư mục output đã chọn:
 | `intent/`                 | Các bản cập nhật điểm quan tâm theo cửa sổ; không phải một bảng trạng thái cuối cùng đã được gộp.         |
 | `recommendations/`        | Các bản ghi gợi ý JSON; Spark cũng ghi gợi ý ra console.                                                                  |
 | `sessions/`               | Các phiên đã đóng theo watermark, gồm thời điểm và các thống kê phiên.                                            |
-| `purchases/`              | Lịch sử cặp khách truy cập/sản phẩm đã mua để lọc gợi ý ở các batch sau.                                         |
 | `recommendation_history/` | Lịch sử gợi ý đã xuất để hạn chế gợi ý lặp.                                                                        |
 | `micro_batches/`          | Thống kê xử lý từng batch; số dòng tổng hợp được cập nhật không đồng nghĩa số thông điệp Kafka đầu vào. |
 | `raw_events/`             | Mọi bản ghi Kafka thô, gồm JSON gốc, partition, offset và `batch_id` của truy vấn lưu thô.                           |
@@ -241,14 +243,14 @@ sh scripts/demo.sh down
 - Bảng ứng viên là quy tắc đồng xem và độ phổ biến tĩnh, không phải mô hình học máy. Việc dùng phần đầu của cùng bộ dữ liệu để xây bảng có thể gây rò rỉ thời gian nếu dùng kết quả để đánh giá gợi ý.
 - Watermark có thể bỏ qua sự kiện đến quá muộn. Giao dịch mua đến sau khi đã xuất gợi ý không thể thu hồi bản ghi gợi ý cũ.
 - Checkpoint Spark và các tệp đầu ra không được ghi trong một giao dịch chung; không nên xem toàn pipeline là exactly once từ đầu đến cuối.
-- Việc đọc lại lịch sử giao dịch và gợi ý từ tệp ở mỗi batch, cùng các truy vấn Spark riêng, sẽ tốn tài nguyên khi dữ liệu tăng. Lịch sử gợi ý còn có thể ngăn lặp lại cùng bộ ba khách/sản phẩm quan tâm/sản phẩm đề xuất ở các phiên sau.
+- Việc đọc lại lịch sử gợi ý từ tệp ở mỗi batch, cùng các truy vấn Spark riêng, sẽ tốn tài nguyên khi dữ liệu tăng. Lịch sử gợi ý còn có thể ngăn lặp lại cùng bộ ba khách/sản phẩm quan tâm/sản phẩm đề xuất ở các phiên sau.
 - Truy vấn lưu sự kiện thô đọc Kafka thêm một lượt và cần thêm dung lượng đĩa. Khoảng offset của batch điểm được ghi sau khi Spark báo tiến độ; nếu chưa thấy tệp offset hoặc bản ghi thô, cần chờ truy vấn lưu thô theo kịp hoặc kiểm tra log.
 - `visitorid` chỉ là mã trong bộ dữ liệu; dự án chưa có đăng nhập, hồ sơ khách hàng hay cách nối danh tính giữa nhiều thiết bị.
 
 ### Hướng phát triển
 
 1. Bổ sung `event_id` và checkpoint cho producer; thiết kế đầu ra có khóa chống trùng và ghi nhất quán khi khởi động lại.
-2. Chuyển lịch sử giao dịch và gợi ý sang kho dữ liệu hoặc state store phù hợp để tránh quét toàn bộ tệp mỗi batch.
+2. Chuyển lịch sử gợi ý sang kho dữ liệu hoặc state store phù hợp để tránh quét toàn bộ tệp mỗi batch.
 3. Tạo ứng viên từ dữ liệu quá khứ theo mốc thời gian rõ ràng, đánh giá chất lượng gợi ý trên tập tương lai và thử thêm mô hình xếp hạng.
 4. Xây API hoặc dashboard đọc dữ liệu đã chuẩn hóa; bổ sung chỉ số theo dõi độ trễ, throughput và chất lượng gợi ý.
 5. Thử triển khai nhiều broker và Spark cluster với lưu trữ checkpoint bền vững, sau đó kiểm tra khả năng khôi phục khi có lỗi.

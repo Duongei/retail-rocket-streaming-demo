@@ -6,7 +6,7 @@ import os
 import time
 from pathlib import Path
 
-from pyspark.sql import SparkSession, Window, functions as F, types as T
+from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.streaming import StreamingQueryListener
 
 EVENT_SCHEMA = T.StructType([
@@ -102,9 +102,7 @@ def score_windows(events, window_duration="10 minutes", slide_duration="5 minute
             .withColumn("window_start", F.col("window.start"))
             .withColumn("window_end", F.col("window.end"))
             .withColumn("event_date", F.to_date("window_start")))
-    return result.withColumn("high_intent", (F.col("intent_score") >= threshold)
-                            & (F.col("addtocart_count") > 0)
-                            & (F.col("transaction_count") == 0))
+    return result.withColumn("high_intent", F.col("intent_score") >= threshold)
 
 
 def summarize_sessions(events, watermark="5 minutes", gap="30 minutes"):
@@ -125,6 +123,57 @@ def summarize_sessions(events, watermark="5 minutes", gap="30 minutes"):
                                                         F.col("session_start").cast("string")), 256))
             .withColumn("event_date", F.to_date("session_start"))
             .drop("session_window"))
+
+
+def make_batch_writer(spark, output, candidates, candidate_path):
+    """Create the intent sink; retain recommendation history across batches and windows."""
+    def write_batch(batch_df, batch_id):
+        started = time.monotonic()
+        batch_df.persist()
+        try:
+            changed_count = batch_df.count()
+            high = batch_df.filter("high_intent")
+            if candidates is not None:
+                recs = (high.alias("h").join(candidates.alias("c"),
+                                            F.col("h.itemid") == F.col("c.itemid"), "inner")
+                        .filter(F.col("h.itemid") != F.col("c.recommended_itemid"))
+                        .select(F.col("h.visitorid").alias("visitorid"),
+                                F.col("h.itemid").alias("interested_itemid"),
+                                F.col("c.recommended_itemid").alias("recommended_itemid"),
+                                F.col("h.intent_score").alias("intent_score"),
+                                F.col("h.window_start").alias("window_start"),
+                                F.col("h.window_end").alias("window_end"),
+                                F.col("c.method").alias("method"),
+                                F.col("c.candidate_score").alias("candidate_score")))
+                recs = (recs.withColumn("recommendation_time", F.current_timestamp())
+                        .withColumn("batch_id", F.lit(batch_id)))
+                recs = recs.dropDuplicates(["visitorid", "interested_itemid", "recommended_itemid"])
+                history_root = output / "recommendation_history"
+                history_parts = list(history_root.glob("batch_id=*") ) if history_root.exists() else []
+                if history_parts:
+                    sent_before = (spark.read.parquet(str(history_root / "batch_id=*"))
+                                .filter(F.col("batch_id") != batch_id)
+                                .select("visitorid", "interested_itemid", "recommended_itemid").distinct())
+                    recs = recs.join(sent_before,
+                                    ["visitorid", "interested_itemid", "recommended_itemid"], "left_anti")
+                recs.show(100, truncate=False)
+                recs.write.mode("overwrite").json(str(output / "recommendations" / f"batch_id={batch_id}"))
+                recs.write.mode("overwrite").parquet(str(history_root / f"batch_id={batch_id}"))
+            else:
+                logging.warning("No candidate file %s; high-intent rows have no valid product recommendation", candidate_path)
+                high.select("visitorid", "itemid", "intent_score", "window_start", "window_end").show(100, False)
+            (batch_df.write.mode("overwrite").partitionBy("event_date")
+            .parquet(str(output / "intent" / f"batch_id={batch_id}")))
+            elapsed = round((time.monotonic() - started) * 1000, 2)
+            metric = {"batch_id": batch_id, "aggregate_update_count": changed_count,
+                      "duration_ms": elapsed, "completed_at_epoch_ms": int(time.time() * 1000)}
+            logging.info("micro_batch %s", json.dumps(metric, sort_keys=True))
+            (output / "micro_batches" / f"batch_id={batch_id}.json").write_text(
+                json.dumps(metric) + "\n", encoding="utf-8")
+        finally:
+            batch_df.unpersist()
+
+    return write_batch
 
 
 def main(argv=None):
@@ -160,77 +209,10 @@ def main(argv=None):
         candidates = (spark.read.option("header", True).csv(str(candidate_path))
                     .select(F.col("itemid").cast("long"), F.col("recommended_itemid").cast("long"),
                             F.col("candidate_score").cast("long"), F.col("method")))
+        if candidates.groupBy("itemid").count().filter("count > 1").limit(1).count():
+            raise ValueError("Candidate catalog must contain one row per item; rebuild with build_candidates.py --top-k 1")
 
-    def write_batch(batch_df, batch_id):
-        started = time.monotonic()
-        batch_df.persist()
-        try:
-            changed_count = batch_df.count()
-            # Durable append-by-batch purchase ledger prevents re-promoting an item
-            # when its transaction falls in a different sliding window.
-            ledger_root = output / "purchases"
-            purchase_batch = batch_df.filter("transaction_count > 0").select("visitorid", "itemid").distinct()
-            purchase_batch.write.mode("overwrite").parquet(str(ledger_root / f"batch_id={batch_id}"))
-            ledger_parts = list(ledger_root.glob("batch_id=*"))
-            if ledger_parts:
-                purchases = spark.read.parquet(str(ledger_root / "batch_id=*"))\
-                    .select("visitorid", "itemid").distinct()
-                high = (batch_df.filter("high_intent").join(purchases, ["visitorid", "itemid"], "left_anti"))
-            else:
-                high = batch_df.filter("high_intent")
-            if candidates is not None:
-                recs = (high.alias("h").join(candidates.alias("c"),
-                                            F.col("h.itemid") == F.col("c.itemid"), "inner")
-                        .filter(F.col("h.itemid") != F.col("c.recommended_itemid"))
-                        .select(F.col("h.visitorid").alias("visitorid"),
-                                F.col("h.itemid").alias("interested_itemid"),
-                                F.col("c.recommended_itemid").alias("recommended_itemid"),
-                                F.col("h.intent_score").alias("intent_score"),
-                                F.col("h.window_start").alias("window_start"),
-                                F.col("h.window_end").alias("window_end"),
-                                F.col("c.method").alias("method"),
-                                F.col("c.candidate_score").alias("candidate_score")))
-                # A candidate already bought by this visitor is not a useful recommendation.
-                # Filter before ranking so the next eligible candidate can be selected.
-                recs = recs.alias("r").join(
-                    purchases.alias("p"),
-                    (F.col("r.visitorid") == F.col("p.visitorid"))
-                    & (F.col("r.recommended_itemid") == F.col("p.itemid")),
-                    "left_anti",
-                )
-                # Candidate order is deterministic; emit at most one product per interested item/window.
-                rank = Window.partitionBy("visitorid", "interested_itemid", "window_start", "window_end")\
-                    .orderBy(F.col("candidate_score").desc(), F.col("recommended_itemid").asc())
-                recs = (recs.withColumn("rn", F.row_number().over(rank)).filter("rn = 1")
-                        .select("visitorid", "interested_itemid", "recommended_itemid",
-                                "intent_score", "window_start", "window_end",
-                                F.current_timestamp().alias("recommendation_time"),
-                                F.lit(batch_id).alias("batch_id"), "method", "candidate_score"))
-                recs = recs.dropDuplicates(["visitorid", "interested_itemid", "recommended_itemid"])
-                history_root = output / "recommendation_history"
-                history_parts = list(history_root.glob("batch_id=*") ) if history_root.exists() else []
-                if history_parts:
-                    sent_before = (spark.read.parquet(str(history_root / "batch_id=*"))
-                                .filter(F.col("batch_id") != batch_id)
-                                .select("visitorid", "interested_itemid", "recommended_itemid").distinct())
-                    recs = recs.join(sent_before,
-                                    ["visitorid", "interested_itemid", "recommended_itemid"], "left_anti")
-                recs.show(100, truncate=False)
-                recs.write.mode("overwrite").json(str(output / "recommendations" / f"batch_id={batch_id}"))
-                recs.write.mode("overwrite").parquet(str(history_root / f"batch_id={batch_id}"))
-            else:
-                logging.warning("No candidate file %s; high-intent rows have no valid product recommendation", candidate_path)
-                high.select("visitorid", "itemid", "intent_score", "window_start", "window_end").show(100, False)
-            (batch_df.write.mode("overwrite").partitionBy("event_date")
-            .parquet(str(output / "intent" / f"batch_id={batch_id}")))
-            elapsed = round((time.monotonic() - started) * 1000, 2)
-            metric = {"batch_id": batch_id, "aggregate_update_count": changed_count,
-                      "duration_ms": elapsed, "completed_at_epoch_ms": int(time.time() * 1000)}
-            logging.info("micro_batch %s", json.dumps(metric, sort_keys=True))
-            (output / "micro_batches" / f"batch_id={batch_id}.json").write_text(
-                json.dumps(metric) + "\n", encoding="utf-8")
-        finally:
-            batch_df.unpersist()
+    write_batch = make_batch_writer(spark, output, candidates, candidate_path)
 
     query = (scored.writeStream.outputMode("update").foreachBatch(write_batch)
             .option("checkpointLocation", args.checkpoint).queryName("retail-rocket-intent")

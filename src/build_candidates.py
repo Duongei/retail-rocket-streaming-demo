@@ -14,8 +14,29 @@ def main():
     parser.add_argument("--input", default="data/events_sorted.csv")
     parser.add_argument("--output", default="data/item_candidates.csv")
     parser.add_argument("--max-rows", type=int, default=500000)
-    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--top-k", type=int, choices=(1,), default=1)
+    parser.add_argument("--ensure-top-one", action="store_true",
+                        help="Reuse a nonempty top-one catalog; rebuild legacy multi-candidate files.")
     args = parser.parse_args()
+    if args.ensure_top_one and Path(args.output).exists():
+        with Path(args.output).open(newline="", encoding="utf-8") as existing:
+            reader = csv.DictReader(existing)
+            seen = set()
+            valid = reader.fieldnames == ["itemid", "recommended_itemid", "candidate_score", "method"]
+            for row in reader:
+                try:
+                    item, candidate = int(row["itemid"]), int(row["recommended_itemid"])
+                    int(row["candidate_score"])
+                except (ValueError, TypeError, KeyError):
+                    valid = False
+                    break
+                if item in seen or item == candidate:
+                    valid = False
+                    break
+                seen.add(item)
+            if valid and seen:
+                print(f"Reusing top-one catalog {args.output}")
+                return
     visitors = defaultdict(set)
     all_items = set()
     source_rows = 0

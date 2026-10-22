@@ -133,7 +133,7 @@ services:
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - test -s /app/data/item_candidates.csv || python /app/build_candidates.py --input /app/data/events_sorted.csv --output /app/data/item_candidates.csv
+      - python /app/build_candidates.py --input /app/data/events_sorted.csv --output /app/data/item_candidates.csv --top-k 1 --ensure-top-one
     volumes:
       - ../src/build_candidates.py:/app/build_candidates.py:ro
       - ../data:/app/data

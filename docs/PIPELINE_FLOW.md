@@ -12,7 +12,7 @@ flowchart LR
   I --> G
   I --> O1[Điểm Parquet và console]
   G --> O2[Gợi ý JSON]
-  G --> H[Lịch sử mua và gợi ý]
+  G --> H[Lịch sử gợi ý]
   E --> SW[Phiên: ngắt 30 phút]
   SW --> O3[Phiên đã đóng Parquet]
   S --> RAW[Sự kiện Kafka thô và offset từng batch]
@@ -35,13 +35,13 @@ Watermark mặc định là 5 phút theo **thời gian sự kiện**, được t
 
 ## 3. Chọn gợi ý và lưu lịch sử
 
-Một dòng cửa sổ được đánh dấu `high_intent` khi điểm đạt `INTENT_THRESHOLD` (mặc định 5), có ít nhất một lần thêm vào giỏ và không có giao dịch trong chính cửa sổ. Trong `write_batch`, lịch sử mua ở `purchases/` còn loại những cặp `(visitorid, itemid)` đã mua ở batch hoặc cửa sổ khác.
+Một dòng cửa sổ được đánh dấu `high_intent` khi điểm đạt `INTENT_THRESHOLD` (mặc định 5). Không yêu cầu thêm giỏ, không kiểm tra transaction hoặc lịch sử mua. Năm view, một addtocart hoặc một transaction đều có thể đạt ngưỡng.
 
-`src/build_candidates.py` tạo bảng ứng viên tĩnh từ hành vi `view`/`addtocart` của cùng khách trong 500.000 dòng đầu CSV. Mỗi sản phẩm có tối đa năm quan hệ đồng xem; mã sản phẩm xuất hiện ở phần còn lại của CSV nhưng thiếu quan hệ được gán một sản phẩm phổ biến dự phòng. File này chỉ được tạo khi chưa có, không cập nhật theo từng micro-batch.
+`src/build_candidates.py` tạo bảng ứng viên tĩnh từ hành vi `view`/`addtocart` của cùng khách trong 500.000 dòng đầu CSV. Mỗi sản phẩm có tối đa một ứng viên đồng xem; mã sản phẩm xuất hiện ở phần còn lại của CSV nhưng thiếu quan hệ được gán một sản phẩm phổ biến dự phòng. Compose dùng `--ensure-top-one`: tạo bảng khi thiếu/rỗng hoặc phát hiện nhiều ứng viên trên một sản phẩm; bảng không cập nhật theo từng micro-batch. Khi đổi dữ liệu nguồn, dừng Spark và chạy builder không có cờ này để tạo lại.
 
-Spark nối sản phẩm đang quan tâm với bảng ứng viên, loại chính sản phẩm đó và những ứng viên khách đã mua, rồi xếp theo `candidate_score` giảm dần và `recommended_itemid` tăng dần. Mỗi cặp khách/sản phẩm quan tâm/cửa sổ lấy nhiều nhất một ứng viên trong batch. Lịch sử `recommendation_history/` ngăn phát lại cùng bộ ba `(visitorid, interested_itemid, recommended_itemid)` ở batch sau; quy tắc này cũng có thể chặn gợi ý lặp ở phiên khác. Nếu ứng viên không có hoặc đã bị loại hết, batch không tạo gợi ý hợp lệ.
+Spark nối sản phẩm đang quan tâm với ứng viên top 1 cố định, loại chính sản phẩm đó và gộp trùng giữa các cửa sổ trong batch. Lịch sử `recommendation_history/` chặn cùng bộ ba `(visitorid, interested_itemid, recommended_itemid)` xuyên batch, cửa sổ và session. Không có ứng viên thì không có gợi ý. Bảng nhiều ứng viên trên một item bị từ chối; tạo lại bằng builder trước khi chạy.
 
-Lịch sử mua và gợi ý là các tệp Parquet đọc lại trong callback. Việc ghi chúng, gợi ý JSON và checkpoint Spark không nằm trong một giao dịch chung. Một giao dịch đến sau cũng không thu hồi gợi ý đã xuất trước đó.
+Lịch sử gợi ý là các tệp Parquet đọc lại trong callback. Việc ghi chúng, gợi ý JSON và checkpoint Spark không nằm trong một giao dịch chung. Một giao dịch đến sau cũng không thu hồi gợi ý đã xuất trước đó.
 
 ## 4. Phiên truy cập
 
@@ -55,7 +55,6 @@ Tệp phiên có `event_count`, số lần từng loại hành vi, `first_event_
 |---|---|
 | `intent/batch_id=...` | Bản cập nhật tổng hợp Parquet, chia thêm theo `event_date`. Muốn lấy trạng thái mới nhất của một khóa cửa sổ cần chọn `batch_id` lớn nhất. |
 | `recommendations/batch_id=...` | Gợi ý JSON theo batch. |
-| `purchases/batch_id=...` | Cặp khách/sản phẩm đã mua theo batch, dùng để lọc những gợi ý về sau. |
 | `recommendation_history/batch_id=...` | Các gợi ý đã xuất, dùng để chống lặp. |
 | `sessions/batch_id=...` | Các phiên đã đóng, định dạng Parquet. |
 | `micro_batches/batch_id=....json` | Số dòng tổng hợp được cập nhật, thời gian callback và thời điểm hoàn thành; không phải số sự kiện Kafka đầu vào. |
@@ -72,7 +71,7 @@ Checkpoint giữ offsets và trạng thái Spark. Ghi đè tệp theo `batch_id`
 |---:|---|---:|---|
 | 0 | Xem A | 1 | Chưa đủ điều kiện. |
 | 1 | Xem A lần nữa | 2 | Chưa đủ điều kiện. |
-| 2 | Thêm A vào giỏ | 7 | Đủ điều kiện nếu A chưa mua và có ứng viên hợp lệ. |
-| 3 | Mua A | 17 | Lịch sử mua chặn gợi ý tiếp theo cho A. |
+| 2 | Thêm A vào giỏ | 7 | Đủ điều kiện nếu có ứng viên và bộ ba chưa có trong lịch sử gợi ý. |
+| 3 | Mua A | 17 | Lịch sử gợi ý chặn xuất lại cùng bộ ba; transaction không loại high-intent. |
 
 Mỗi cửa sổ chồng nhau có điểm riêng; bảng ví dụ chỉ mô tả **một** cửa sổ.
