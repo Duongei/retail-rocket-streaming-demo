@@ -95,6 +95,22 @@ Phiên bản hiện tại chỉ xét điểm đạt ngưỡng, dùng một ứng
 
 Khi chuyển từ bảng top 5, dừng Spark trước khi tạo lại ứng viên. `candidate-init` tự nhận diện bảng nhiều ứng viên và tạo lại top 1; bảng top 1 có sẵn được tái sử dụng. Khi đổi dữ liệu nguồn hoặc thuật toán, chạy builder không có `--ensure-top-one` để buộc tạo lại. Output cũ được giữ nguyên; một lần `start` mới tạo lịch sử gợi ý mới, còn chạy tiếp với cùng output sẽ giữ lịch sử chống lặp.
 
+### Script điều khiển lần chạy
+
+`scripts/demo.sh` là lớp điều khiển cho Compose, không thay thế producer hay Spark. Chạy các lệnh từ thư mục gốc dự án sau khi đã tạo `.env`:
+
+| Lệnh                                    | Tác dụng                                                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sh scripts/demo.sh start`             | Đọc `SO_DONG`, tạo Compose project và thư mục output riêng, đặt `SKIP=0`, `LIMIT=SO_DONG`, rồi chạy `docker compose up --build -d`. |
+| `sh scripts/demo.sh status`            | Hiện project và output lần chạy gần nhất cùng trạng thái container.                                                                           |
+| `sh scripts/demo.sh logs`              | Theo dõi log của `producer` và `spark-streaming`; `Ctrl+C` chỉ dừng theo dõi log.                                                          |
+| `sh scripts/demo.sh count`             | Cộng `num_input_rows` từ manifest `intent_input_offsets/` để báo số sự kiện Kafka Spark đã đọc.                                        |
+| `sh scripts/demo.sh batch ID [LIMIT]`  | Dùng `src/inspect_batch.py` trong container để tra sự kiện thô theo offset của batch điểm. Mặc định hiển thị tối đa 100 dòng.       |
+| `sh scripts/demo.sh append SKIP LIMIT` | Phát tiếp một đoạn CSV vào cùng project, checkpoint và output; cần để stack đang chạy.                                                    |
+| `sh scripts/demo.sh down`              | Dừng project gần nhất, giữ thư mục output và Docker volume.                                                                                     |
+
+Script lưu project/output gần nhất trong `.demo_last_run`. Mỗi lần `start` tạo thư mục output mới; `append` tiếp tục dùng output và checkpoint đang có. `start` chủ động lấy cấu hình từ `.env` và ghi đè `SKIP`, `LIMIT`, `OUTPUT_HOST_DIR` cho lần chạy mới. Khi gọi Compose trực tiếp, các biến đã export trong shell có thể ghi đè giá trị trong `.env`.
+
 Các lệnh dưới đây chạy từ **thư mục gốc dự án**. Mỗi lần dùng `start`, script tạo một lần chạy và một thư mục `output_...` mới; kết quả của những lần trước vẫn được giữ lại.
 
 Nếu muốn chạy full file CSV thì set `SO_DONG=2755641` trong env.
@@ -165,25 +181,34 @@ Số `500` là lượng dòng dữ liệu CSV cần bỏ qua; `1000` là lượn
 
 Compose lấy cấu hình trong `.env` nhờ tham số `--env-file .env`. Script `demo.sh start` đọc `SO_DONG` từ tệp này và chủ động đặt `SKIP=0`, `LIMIT=SO_DONG`, thư mục output mới; các tham số còn lại vẫn lấy từ `.env`. Khi dùng Compose trực tiếp, biến đã `export` trong terminal sẽ ưu tiên hơn giá trị cùng tên trong `.env`:
 
-| Biến                       |    Mặc định | Tác dụng                                                                                                                |
-| --------------------------- | -------------: | ------------------------------------------------------------------------------------------------------------------------- |
-| `SO_DONG`                 |        `500` | Số dòng đầu CSV cho `sh scripts/demo.sh start`; chỉ cần đổi giá trị này để chạy 1.000, 5.000 dòng đầu. |
-| `LIMIT`                   |         trống | Số sự kiện tối đa producer gửi; trống là đến hết CSV.                                                          |
-| `SKIP`                    |          `0` | Số dòng dữ liệu bỏ qua sau dòng tiêu đề.                                                                         |
-| `SPEEDUP`                 |         `20` | Hệ số tăng tốc theo khoảng thời gian sự kiện; `0` chuyển sang tốc độ cố định.                            |
-| `RATE`                    |         `10` | Số sự kiện/giây khi `SPEEDUP=0`.                                                                                    |
-| `MAX_SLEEP`               |          `5` | Thời gian chờ tối đa giữa hai sự kiện.                                                                             |
-| `REORDER_BUFFER`          |          `0` | Kích thước bộ đệm đảo thứ tự để mô phỏng sự kiện đến trễ; `0` giữ thứ tự gốc.                    |
-| `STARTING_OFFSETS`        |   `earliest` | Offset Kafka ban đầu khi Spark chưa có checkpoint.                                                                    |
-| `WINDOW_DURATION`         | `10 minutes` | Độ dài cửa sổ tính điểm.                                                                                          |
-| `SLIDE_DURATION`          |  `5 minutes` | Bước trượt của cửa sổ.                                                                                             |
-| `WATERMARK`               |  `5 minutes` | Ngưỡng trễ theo thời gian sự kiện.                                                                                  |
-| `SESSION_GAP`             | `30 minutes` | Khoảng không hoạt động phân tách phiên.                                                                           |
-| `INTENT_THRESHOLD`        |          `5` | Điểm tối thiểu để xét gợi ý.                                                                                     |
-| `TRIGGER_SECONDS`         |          `5` | Chu kỳ kích hoạt micro-batch Spark.                                                                                    |
-| `MAX_OFFSETS_PER_TRIGGER` |          `0` | Giới hạn thông điệp Kafka mỗi batch; `0` là không giới hạn.                                                   |
-| `OUTPUT_HOST_DIR`         |  `../output` | Thư mục kết quả trên máy, tính từ thư mục `docker/`.                                                          |
-| `ARCHIVE_RAW_EVENTS`      |          `1` | `1` lưu toàn bộ sự kiện Kafka thô; `0` tắt truy vấn lưu thô để giảm đọc Kafka và dung lượng đĩa.  |
+| Biến                        |                     Mặc định | Tác dụng                                                                                                                |
+| ---------------------------- | ------------------------------: | ------------------------------------------------------------------------------------------------------------------------- |
+| `KAFKA_TOPIC`              |        `retail-rocket-events` | Tên topic dùng bởi init, producer và Spark.                                                                           |
+| `CSV_PATH`                 | `/app/data/events_sorted.csv` | Đường dẫn CSV trong container producer.                                                                               |
+| `SO_DONG`                  |                         `500` | Số dòng đầu CSV cho `sh scripts/demo.sh start`; chỉ cần đổi giá trị này để chạy 1.000, 5.000 dòng đầu. |
+| `LIMIT`                    |                          trống | Số sự kiện tối đa producer gửi; trống là đến hết CSV.                                                          |
+| `SKIP`                     |                           `0` | Số dòng dữ liệu bỏ qua sau dòng tiêu đề.                                                                         |
+| `SPEEDUP`                  |                          `20` | Hệ số tăng tốc theo khoảng thời gian sự kiện; `0` chuyển sang tốc độ cố định.                            |
+| `RATE`                     |                          `10` | Số sự kiện/giây khi `SPEEDUP=0`.                                                                                    |
+| `MAX_SLEEP`                |                           `5` | Thời gian chờ tối đa giữa hai sự kiện.                                                                             |
+| `PROGRESS_EVERY`           |                         `100` | In tiến độ producer sau mỗi số sự kiện này.                                                                       |
+| `SHUTDOWN_TIMEOUT`         |                          `15` | Thời gian producer chờ gửi hết thông điệp trước khi đóng.                                                      |
+| `REORDER_BUFFER`           |                           `0` | Kích thước bộ đệm đảo thứ tự để mô phỏng sự kiện đến trễ; `0` giữ thứ tự gốc.                    |
+| `REORDER_SEED`             |                           `7` | Seed để việc trộn nhóm sự kiện có thể lặp lại.                                                                 |
+| `STARTING_OFFSETS`         |                    `earliest` | Offset Kafka ban đầu khi Spark chưa có checkpoint.                                                                    |
+| `KAFKA_TOPIC_PARTITIONS`   |                           `3` | Số partition được `kafka-init` tạo cho topic.                                                                      |
+| `KAFKA_TOPIC_RETENTION_MS` |                   `604800000` | Thời gian Kafka giữ sự kiện, tính bằng milliseconds (mặc định 7 ngày).                                          |
+| `WINDOW_DURATION`          |                  `10 minutes` | Độ dài cửa sổ tính điểm.                                                                                          |
+| `SLIDE_DURATION`           |                   `5 minutes` | Bước trượt của cửa sổ.                                                                                             |
+| `WATERMARK`                |                   `5 minutes` | Ngưỡng trễ theo thời gian sự kiện.                                                                                  |
+| `SESSION_GAP`              |                  `30 minutes` | Khoảng không hoạt động phân tách phiên.                                                                           |
+| `INTENT_THRESHOLD`         |                           `5` | Điểm tối thiểu để xét gợi ý.                                                                                     |
+| `TRIGGER_SECONDS`          |                           `5` | Chu kỳ kích hoạt micro-batch Spark.                                                                                    |
+| `MAX_OFFSETS_PER_TRIGGER`  |                           `0` | Giới hạn thông điệp Kafka mỗi batch; `0` là không giới hạn.                                                   |
+| `OUTPUT_HOST_DIR`          |                   `../output` | Thư mục kết quả trên máy, tính từ thư mục `docker/`.                                                          |
+| `ARCHIVE_RAW_EVENTS`       |                           `1` | `1` lưu toàn bộ sự kiện Kafka thô; `0` tắt truy vấn lưu thô để giảm đọc Kafka và dung lượng đĩa.  |
+
+`KAFKA_TOPIC_PARTITIONS` và `KAFKA_TOPIC_RETENTION_MS` là biến Compose với mặc định trong `docker-compose.yml`; có thể thêm chúng vào `.env` nếu muốn thay đổi. `CSV_PATH` là đường dẫn bên trong container, còn `OUTPUT_HOST_DIR` là đường dẫn host được bind mount vào Spark. `SO_DONG` chỉ được script `demo.sh start` đọc; Compose trực tiếp không dùng biến này.
 
 Trong thư mục output đã chọn:
 

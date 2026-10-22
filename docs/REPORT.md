@@ -1,8 +1,8 @@
-# Báo cáo dự án: Theo dõi phiên và gợi ý sản phẩm theo thời gian thực
+# Theo dõi phiên và gợi ý sản phẩm theo thời gian thực
 
 ## 1. Mục tiêu và phạm vi
 
-Dự án dùng dữ liệu Retail Rocket để minh họa một pipeline xử lý luồng: phát lại hành vi người dùng vào Kafka, tính điểm quan tâm bằng Spark Structured Streaming, đề xuất một sản phẩm liên quan và ghi lại các phiên truy cập. Đây là bản demo cục bộ để học về phân vùng Kafka, micro-batch, thời gian sự kiện, watermark và checkpoint; dự án chưa đánh giá chất lượng gợi ý như một sản phẩm thương mại.
+Dự án dùng dữ liệu Retail Rocket để mô phỏng lại một pipeline xử lý luồng: phát lại hành vi người dùng vào Kafka, tính điểm quan tâm bằng Spark Structured Streaming, đề xuất một sản phẩm liên quan và ghi lại các phiên truy cập. Đây là bản demo cục bộ để học về phân vùng Kafka, micro-batch, thời gian sự kiện, watermark và checkpoint; dự án chưa đánh giá chất lượng gợi ý như một sản phẩm thương mại.
 
 Dữ liệu hiện tại đã loại 460 bản sao giống nhau ở cả năm cột (94 view, 366 addtocart), giữ lần xuất hiện đầu tiên và thứ tự thời gian.
 
@@ -10,9 +10,9 @@ Tệp `data/events_sorted.csv` gồm 2.755.642 dòng tính cả header, tức 2.
 
 ## 2. Đối chiếu yêu cầu với phần triển khai
 
-| Yêu cầu | Cách dự án thực hiện |
-|---|---|
-| Nguồn sự kiện liên tục | `src/producer.py` đọc CSV và gửi JSON lên Kafka theo tốc độ có thể điều chỉnh; `SKIP` và `LIMIT` chọn đoạn dữ liệu để phát. |
+| Yêu cầu                              | Cách dự án thực hiện                                                                                                                                                                                                                    |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nguồn sự kiện liên tục            | `src/producer.py` đọc CSV và gửi JSON lên Kafka theo tốc độ có thể điều chỉnh; `SKIP` và `LIMIT` chọn đoạn dữ liệu để phát.                                                                                      |
 | Kafka có khả năng xử lý song song | `docker/docker-compose.yml` tạo topic mặc định ba phân vùng trên một Kafka broker KRaft. Key `visitorid` giữ các thông điệp cùng khách trong một phân vùng; số phân vùng giới hạn mức song song khi đọc topic. |
 | Đọc Kafka bằng Spark | `src/streaming_etl.py` dùng Kafka source, schema JSON rõ ràng, chuyển `timestamp` sang `event_time` và lọc sự kiện không hợp lệ. |
 | Cửa sổ thời gian sự kiện | Mặc định cửa sổ 10 phút trượt 5 phút và watermark 5 phút; cấu hình qua `.env`. |
@@ -67,13 +67,13 @@ Trong mỗi batch, Spark tra một ứng viên cố định và loại bộ ba �
 
 ### Vì sao chọn Kafka thay vì Flume
 
-| Tiêu chí | Kafka trong dự án | Flume |
-|---|---|---|
-| Mô hình | Log sự kiện lưu theo topic và phân vùng; producer và consumer tách rời. | Luồng thu thập dựa trên agent với source, channel và sink. |
-| Đọc lại | Spark có thể đọc lại offsets còn trong thời hạn lưu trữ của topic. | Channel chủ yếu làm bộ đệm chuyển sự kiện, không phục vụ cùng kiểu đọc lại log nhiều consumer. |
-| Song song | Phân vùng chia tải; thứ tự được bảo đảm trong từng phân vùng. | Chia tải theo cấu hình các agent/channel/sink. |
-| Tích hợp với Spark | Có Kafka source và connector chuyên dụng. | Thường cần thêm đường chuyển dữ liệu hoặc hệ trung gian. |
-| Vận hành | Cần quản lý broker, topic, retention và phân vùng. | Phù hợp hơn với bài toán thu thập/chuyển tiếp log. |
+| Tiêu chí            | Kafka trong dự án                                                              | Flume                                                                                                            |
+| --------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Mô hình             | Log sự kiện lưu theo topic và phân vùng; producer và consumer tách rời. | Luồng thu thập dựa trên agent với source, channel và sink.                                                 |
+| Đọc lại            | Spark có thể đọc lại offsets còn trong thời hạn lưu trữ của topic.    | Channel chủ yếu làm bộ đệm chuyển sự kiện, không phục vụ cùng kiểu đọc lại log nhiều consumer. |
+| Song song             | Phân vùng chia tải; thứ tự được bảo đảm trong từng phân vùng.      | Chia tải theo cấu hình các agent/channel/sink.                                                               |
+| Tích hợp với Spark | Có Kafka source và connector chuyên dụng.                                    | Thường cần thêm đường chuyển dữ liệu hoặc hệ trung gian.                                             |
+| Vận hành            | Cần quản lý broker, topic, retention và phân vùng.                         | Phù hợp hơn với bài toán thu thập/chuyển tiếp log.                                                      |
 
 Kafka dùng KRaft để quản lý metadata thay cho ZooKeeper. Cấu hình trong dự án chỉ có một broker/controller và replication factor 1, nên không có tính sẵn sàng cao. Xem [tài liệu Kafka](https://kafka.apache.org/documentation/) và [tài liệu tích hợp Spark–Kafka](https://spark.apache.org/docs/3.5.8/structured-streaming-kafka-integration.html).
 

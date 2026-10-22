@@ -1,20 +1,20 @@
 #!/bin/sh
 # Quản lý một lần chạy demo tách riêng Kafka, checkpoint và thư mục output.
-set -eu
+set -eu  # Dừng script nếu có lỗi hoặc biến chưa được định nghĩa.
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-cd "$ROOT"
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)  # Đường dẫn tới thư mục gốc của demo.
+cd "$ROOT"  # Di chuyển đến thư mục gốc của demo.
 
-if [ ! -f .env ]; then
-    printf 'Thiếu .env. Tạo bằng: cp .env.example .env\n' >&2
-    exit 1
-fi
+if [ ! -f .env ]; then  # Nếu file .env không tồn tại.
+    printf 'Thiếu .env. Tạo bằng: cp .env.example .env\n' >&2  # In thông báo lỗi ra stderr.
+    exit 1  # Dừng script với mã exit 1.
+fi  # Nếu file .env tồn tại.
 
 # Các giá trị này phải đến từ .env, không lấy lại export còn sót trong terminal.
-unset CSV_PATH SPEEDUP REORDER_BUFFER STARTING_OFFSETS ARCHIVE_RAW_EVENTS
+unset CSV_PATH SPEEDUP REORDER_BUFFER STARTING_OFFSETS ARCHIVE_RAW_EVENTS  # Xóa các biến môi trường không cần thiết.
 
-STATE_FILE=.demo_last_run
-COMPOSE_FILE=docker/docker-compose.yml
+STATE_FILE=.demo_last_run  # File lưu thông tin lần chạy gần nhất.
+COMPOSE_FILE=docker/docker-compose.yml  # Đường dẫn tới file cấu hình Docker Compose.
 
 read_state() {
     if [ ! -f "$STATE_FILE" ]; then
@@ -41,7 +41,7 @@ usage() {
 
 case "${1:-}" in
     start)
-        SO_DONG=$(awk '/^SO_DONG=/ {value=$0; sub(/^SO_DONG=/, "", value)} END {print value}' .env)
+        SO_DONG=$(awk '/^SO_DONG=/ {value=$0; sub(/^SO_DONG=/, "", value)} END {print value}' .env)  # Đọc số dòng cần xử lý
         case "$SO_DONG" in
             ''|*[!0-9]*) printf 'SO_DONG trong .env phải là số nguyên dương.\n' >&2; exit 2 ;;
         esac
@@ -49,14 +49,15 @@ case "${1:-}" in
             printf 'SO_DONG trong .env phải lớn hơn 0.\n' >&2
             exit 2
         fi
-        RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
-        PROJECT="retail-rocket-${SO_DONG}-${RUN_ID}"
-        OUTPUT_DIR="output_${SO_DONG}_${RUN_ID}"
-        mkdir "$OUTPUT_DIR"
-        export SKIP=0 LIMIT="$SO_DONG" OUTPUT_HOST_DIR="../$OUTPUT_DIR"
+        RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"  # Tạo ID riêng cho lần chạy
+        PROJECT="retail-rocket-${SO_DONG}-${RUN_ID}"  # Đặt tên cho Docker project
+        OUTPUT_DIR="output_${SO_DONG}_${RUN_ID}"  # Đặt tên thư mục output riêng cho lần chạy
+        mkdir "$OUTPUT_DIR"  # Script tạo thư mục output tương ứng.
+        export SKIP=0 LIMIT="$SO_DONG" OUTPUT_HOST_DIR="../$OUTPUT_DIR"  # Đưa biến vào môi trường để tiến trình con sử dụng.
         printf 'SO_DONG=%s\nProject=%s\nOutput=%s\n' "$SO_DONG" "$PROJECT" "$OUTPUT_DIR"
-        compose up --build -d
-        printf '%s\n%s\n' "$PROJECT" "$OUTPUT_DIR" > "${STATE_FILE}.tmp.$$"
+        compose up --build -d  # Khởi động hệ thống, build nếu cần.
+        printf '%s\n%s\n' "$PROJECT" "$OUTPUT_DIR" > "${STATE_FILE}.tmp.$$"  # Lưu thông tin lần chạy vào file tạm.
+        # Nếu mv thất bại, file tạm sẽ vẫn còn để debug.
         mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
         compose ps -a
         printf '\nXem log: sh scripts/demo.sh logs\nKiểm tra: sh scripts/demo.sh count\n'

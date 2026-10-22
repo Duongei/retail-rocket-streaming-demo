@@ -1,5 +1,13 @@
 # Luồng dữ liệu và cách pipeline xử lý khi chạy
 
+## Lệnh chạy kích hoạt những gì
+
+Lệnh demo chuẩn là `sh scripts/demo.sh start` từ thư mục gốc. Script đọc `SO_DONG` trong `.env`, tạo Compose project/output riêng, đặt `SKIP=0` và `LIMIT=SO_DONG`, sau đó gọi `docker compose --env-file .env ... up --build -d`. Trạng thái project và output gần nhất được lưu trong `.demo_last_run`; các lệnh `logs`, `status`, `count`, `batch`, `append`, `down` trong cùng script dùng thông tin này để thao tác đúng lần chạy.
+
+Compose định nghĩa thứ tự khởi động trong `docker/docker-compose.yml`: Kafka phải khỏe trước khi `kafka-init` tạo topic; `candidate-init` tạo bảng ứng viên nếu chưa tồn tại; `spark-checkpoint-init` chuẩn bị quyền volume checkpoint; `producer` đợi topic; Spark đợi topic, candidates và checkpoint rồi chạy `spark-submit ... /app/src/streaming_etl.py`. Spark khởi chạy các truy vấn trong `main`: điểm (`intent`), phiên (`sessions`), console và lưu thô (`raw_events`) nếu `ARCHIVE_RAW_EVENTS=1`. Biến trong `.env` được Compose chuyển thành môi trường container. `demo.sh start` ghi đè `SKIP`, `LIMIT`, `OUTPUT_HOST_DIR`; `append SKIP LIMIT` chỉ tạo lại producer với đoạn CSV được chỉ định.
+
+Chi tiết cú pháp lệnh và bảng cấu hình đầy đủ nằm trong [README](../README.md#script-điều-khiển-lần-chạy) và [README – cấu hình](../README.md#cấu-hình-kết-quả-và-kiểm-tra).
+
 ```mermaid
 flowchart LR
   CSV[events_sorted.csv] --> P[Producer Python]
