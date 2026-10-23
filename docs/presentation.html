@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Retail Rocket — Kafka và Spark Structured Streaming</title>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #101827; color: #eef3fa; }
+    main { min-height: 100vh; display: grid; place-items: center; padding: 2rem; }
+    .slide { display: none; width: min(1120px, 100%); min-height: min(630px, 78vh); padding: 3rem 4rem; border-radius: 20px; background: #19263a; box-shadow: 0 20px 60px #0008; }
+    .slide.active { display: flex; flex-direction: column; justify-content: center; }
+    h1 { font-size: clamp(2.4rem, 5vw, 4.5rem); line-height: 1.12; margin: 0 0 1.5rem; }
+    h2 { font-size: clamp(2rem, 4vw, 3.2rem); margin: 0 0 1.5rem; }
+    p, li, td, th { font-size: clamp(1.15rem, 2vw, 1.6rem); line-height: 1.5; }
+    ul { padding-left: 1.5em; margin: .4rem 0; }
+    li { margin: .6rem 0; }
+    small, .muted { color: #a9bdd4; }
+    .accent { color: #6de2c2; }
+    .flow { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; font-size: 1.45rem; }
+    .flow span { background: #25415d; border-radius: 10px; padding: .8rem 1rem; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+    .card { background: #25415d; padding: 1.25rem; border-radius: 12px; }
+    .card strong { color: #6de2c2; font-size: 1.6rem; }
+    pre { background: #0d1522; padding: 1.2rem; border-radius: 10px; white-space: pre-wrap; font-size: 1.2rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #456079; text-align: left; padding: .7rem; }
+    nav { position: fixed; right: 1rem; bottom: 1rem; display: flex; gap: .5rem; align-items: center; background: #0d1522dd; padding: .5rem; border-radius: 10px; }
+    button { border: 0; border-radius: 8px; padding: .5rem .9rem; background: #6de2c2; color: #10212a; font-size: 1rem; cursor: pointer; }
+    #counter { min-width: 4rem; text-align: center; }
+    @media (max-width: 700px) { .slide { padding: 2rem; } .cards { grid-template-columns: 1fr; } }
+    @media print { body { background: white; color: black; } main { display: block; padding: 0; } .slide, .slide.active { display: flex; width: 100%; min-height: 100vh; page-break-after: always; box-shadow: none; border-radius: 0; background: white; color: black; } nav { display: none; } .card, .flow span { background: #eee; } }
+  </style>
+</head>
+<body>
+<main>
+  <section class="slide active"><h1>Retail Rocket<br><span class="accent">Kafka + Spark Structured Streaming</span></h1><p>Theo dõi ý định mua hàng và gợi ý sản phẩm theo luồng sự kiện</p><small>Trình bày 10–15 phút · Dùng phím ← → để chuyển trang</small></section>
+  <section class="slide"><h2>1. Bài toán</h2><ul><li>Retail Rocket: 2.755.641 sự kiện view, addtocart, transaction.</li><li>Nhận hành vi liên tục, tính điểm quan tâm trong cửa sổ thời gian.</li><li>Gợi ý một sản phẩm khác khi điểm đạt ngưỡng, không lặp lại cùng bộ ba đã xuất.</li><li>Theo dõi phiên hoạt động và lưu kết quả để phân tích lại.</li></ul></section>
+  <section class="slide"><h2>2. Luồng dữ liệu</h2><div class="flow"><span>CSV</span> → <span>Python producer</span> → <span>Kafka<br>3 partitions</span> → <span>Spark<br>4 queries khi lưu thô</span> → <span>Console / JSON / Parquet</span></div><p>Kafka giữ sự kiện; Spark đọc theo offset và khôi phục trạng thái qua checkpoint.</p></section>
+  <section class="slide"><h2>3. Vì sao Structured Streaming?</h2><table><tr><th>DStream</th><th>Structured Streaming</th></tr><tr><td>Chuỗi micro-batch RDD</td><td>Bảng dữ liệu vô hạn, DataFrame/SQL</td></tr><tr><td>Quản lý event time và state thủ công hơn</td><td>Window, watermark, state và checkpoint tích hợp</td></tr></table><p>Dự án dùng micro-batch 5 giây; thời gian xử lý thực tế phụ thuộc khối lượng mỗi batch.</p></section>
+  <section class="slide"><h2>4. ETL và thời gian sự kiện</h2><ul><li><b>Extract:</b> Kafka source đọc JSON từ topic <code>retail-rocket-events</code>.</li><li><b>Transform:</b> schema tường minh, lọc bản ghi lỗi, đổi epoch milliseconds.</li><li><b>Load:</b> Parquet cho điểm ý định và phiên; JSON cho gợi ý.</li><li>Watermark 5 phút giới hạn trạng thái và xác định dữ liệu tới muộn.</li></ul></section>
+  <section class="slide"><h2>5. Điểm ý định</h2><div class="cards"><div class="card"><strong>+1</strong><p>view</p></div><div class="card"><strong>+5</strong><p>addtocart</p></div><div class="card"><strong>+10</strong><p>transaction</p></div></div><p>Cửa sổ 10 phút, trượt 5 phút. Điều kiện gợi ý: điểm ≥ 5. Không yêu cầu thêm giỏ hoặc chưa mua.</p></section>
+  <section class="slide"><h2>6. Gợi ý sản phẩm</h2><ul><li>Tạo quan hệ đồng xem từ phần đầu dữ liệu lịch sử.</li><li>Tạo bảng top 1 offline, ứng viên khác item đang quan tâm.</li><li>Không lọc ứng viên đã mua; lịch sử gợi ý chặn lặp cùng khách, sản phẩm nguồn và ứng viên.</li><li>Đây là heuristic, chưa phải mô hình đã đo chất lượng dự đoán.</li></ul></section>
+  <section class="slide"><h2>7. Phiên và cửa sổ là hai khái niệm khác nhau</h2><ul><li><code>visitorid</code> theo khách truy cập qua nhiều lần hoạt động.</li><li>Phiên kết thúc sau 30 phút không có sự kiện mới theo event time.</li><li><code>session_id</code> được tạo từ visitor và thời điểm bắt đầu phiên.</li><li>Phiên chỉ được ghi ra khi watermark vượt qua thời điểm kết thúc.</li></ul></section>
+  <section class="slide"><h2>8. Kafka và Flume</h2><table><tr><th>Kafka</th><th>Flume</th></tr><tr><td>Log phân vùng, lưu giữ và phát lại theo offset</td><td>Thu gom và chuyển tiếp dữ liệu qua agent</td></tr><tr><td>Tích hợp trực tiếp với Spark Kafka connector</td><td>Cần đường ingest bổ sung cho bài toán này</td></tr></table></section>
+  <section class="slide"><h2>9. Demo trực tiếp</h2><pre>sh scripts/demo.sh start
+sh scripts/demo.sh logs
+sh scripts/demo.sh count
+sh scripts/demo.sh status</pre><ul><li>Chuẩn bị <code>.env</code>; đổi <code>SO_DONG</code> để chọn số sự kiện phát.</li><li>Mở Kafka UI tại localhost:8085 để xem JSON.</li><li>Xem log producer/Spark, số sự kiện Spark đã đọc và thư mục output.</li><li>Dùng <code>sh scripts/demo.sh down</code> để dừng, vẫn giữ output và checkpoint.</li></ul></section>
+  <section class="slide"><h2>10. Khôi phục và giới hạn</h2><ul><li>Mỗi truy vấn có checkpoint riêng: intent, console, sessions và raw_events khi bật lưu thô.</li><li>Giữ checkpoint cùng output khi restart; không xóa riêng một phía.</li><li>Kafka một broker, replication factor 1: phù hợp demo, chưa chịu lỗi broker.</li><li>Candidate catalog phủ các item trong CSV, nhưng không biết item mới; side effects không có giao dịch toàn cục.</li></ul></section>
+  <section class="slide"><h2>11. Kết luận và tài liệu</h2><p>Luồng sự kiện → trạng thái event time → gợi ý có điều kiện → kết quả có thể kiểm tra lại.</p><small>Đọc thêm: docs/REPORT.md, docs/PIPELINE_FLOW.md, docs/DEMO_SCENARIOS.md. Tài liệu tham khảo chính: Apache Spark Structured Streaming Guide, Apache Kafka Documentation, Ali &amp; Wrembel (2017).</small></section>
+</main>
+<nav><button id="prev" aria-label="Trang trước">←</button><span id="counter"></span><button id="next" aria-label="Trang sau">→</button></nav>
+<script>
+  const slides = [...document.querySelectorAll('.slide')];
+  let index = 0;
+  function show(i) {
+    index = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach((slide, n) => slide.classList.toggle('active', n === index));
+    document.querySelector('#counter').textContent = `${index + 1}/${slides.length}`;
+  }
+  document.querySelector('#prev').onclick = () => show(index - 1);
+  document.querySelector('#next').onclick = () => show(index + 1);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'ArrowRight' || event.key === ' ') show(index + 1);
+    if (event.key === 'ArrowLeft') show(index - 1);
+  });
+  show(0);
+</script>
+</body>
+</html>

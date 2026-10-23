@@ -3,7 +3,7 @@ FROM python:3.11.14-slim-bookworm
 COPY --from=uv /uv /uvx /bin/
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
+COPY src/pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
-COPY producer.py ./
+COPY src/producer.py ./
 ENTRYPOINT ["python", "/app/producer.py"]

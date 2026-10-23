@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import signal
 import threading
 import time
@@ -42,6 +43,8 @@ def read_config(argv=None):
     option("--rate", "RATE", RATE, float)
     option("--progress-every", "PROGRESS_EVERY", PROGRESS_EVERY, int)
     option("--shutdown-timeout", "SHUTDOWN_TIMEOUT", SHUTDOWN_TIMEOUT, float)
+    option("--reorder-buffer", "REORDER_BUFFER", 0, int)
+    option("--reorder-seed", "REORDER_SEED", 7, int)
     config = parser.parse_args(argv)
 
     if (config.limit is not None and config.limit < 0) or config.skip < 0:
@@ -55,9 +58,11 @@ def read_config(argv=None):
         parser.error("RATE must be positive in fixed-rate mode")
     if config.progress_every <= 0 or config.shutdown_timeout <= 0:
         parser.error("PROGRESS_EVERY and SHUTDOWN_TIMEOUT must be positive")
+    if config.reorder_buffer < 0:
+        parser.error("REORDER_BUFFER must be nonnegative")
 
-    # Resolve relative paths from this file, regardless of the terminal directory.
-    config.csv_path = Path(__file__).resolve().parent / config.csv_path
+    # The default data/ directory is at the repository root, above src/.
+    config.csv_path = Path(__file__).resolve().parent.parent / config.csv_path
     return config
 
 
@@ -86,6 +91,23 @@ def wait_before_send(event, previous_timestamp, config):
         time.sleep(min(max(gap, 0), config.max_sleep))
     else:
         time.sleep(1 / config.rate)
+
+
+def reorder_rows(rows, buffer_size, seed):
+    """Shuffle only bounded chunks, retaining every original timestamp and payload."""
+    if not buffer_size:
+        yield from rows
+        return
+    rng = random.Random(seed)
+    buffer = []
+    for row in rows:
+        buffer.append(row)
+        if len(buffer) == buffer_size:
+            rng.shuffle(buffer)
+            yield from buffer
+            buffer = []
+    rng.shuffle(buffer)
+    yield from buffer
 
 
 def print_progress(sent, stats, lock):
@@ -166,7 +188,9 @@ def main(argv=None):
             )
             rows = itertools.islice(reader, config.skip, None)
             rows = itertools.islice(rows, config.limit)
-            for line_number, row in enumerate(rows, start=config.skip + 2):
+            indexed_rows = enumerate(rows, start=config.skip + 2)
+            indexed_rows = reorder_rows(indexed_rows, config.reorder_buffer, config.reorder_seed)
+            for line_number, row in indexed_rows:
                 try:
                     event = make_event(row)
                 except Exception as error:

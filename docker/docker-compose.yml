@@ -1,0 +1,155 @@
+name: retail-rocket-streaming
+
+services:
+  kafka:  # Khởi động Kafka broker
+    image: apache/kafka:3.8.0  # Sử dụng image Kafka 3.8.0
+    hostname: kafka  # Đặt hostname cho container là kafka
+    ports:
+      - "127.0.0.1:9092:9092"
+    environment:  # Đặt môi môi trường cho Kafka broker
+      KAFKA_NODE_ID: 1  # Đặt ID node cho Kafka broker là 1
+      KAFKA_PROCESS_ROLES: broker,controller  # Đặt vai trò cho Kafka broker là broker và controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093  # Đặt voter cho Kafka broker là 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER  # Đặt tên listener cho Kafka broker là CONTROLLER
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093  # Đặt listener cho Kafka broker là INTERNAL://:29092, EXTERNAL://:9092, CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092  # Đặt listener cho Kafka broker là INTERNAL://kafka:29092, EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT  # Đặt protocol cho Kafka broker là INTERNAL:PLAINTEXT, EXTERNAL:PLAINTEXT, CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL  # Đặt listener cho Kafka broker là INTERNAL
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1  # Đặt replication factor cho topic offsets là 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1 # Đặt replication factor cho topic transaction state log là 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1  # Đặt min ISR cho topic transaction state log là 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0  # Đặt initial rebalance delay cho group là 0
+
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"  # Đặt auto create topics là false
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"  # Đặt heap options cho Kafka broker là -Xms512m -Xmx512m
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"  # Đặt log dirs cho Kafka broker là /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data  # Mount volume kafka-data vào /var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:29092 > /dev/null 2>&1 || exit 1"]
+      interval: 10s  # Kiểm tra mỗi 10s
+      timeout: 10s  # Timeout khi kiểm tra
+      retries: 12  # Kiểm tra 12 lần
+      start_period: 20s  # Khi khởi động container, chờ 20s để Kafka broker khởi động xong
+  kafka-init:  # Khởi động Kafka broker init, Tạo Kafka topic, sau đó kết thúc container
+    image: apache/kafka:3.8.0
+    depends_on:  # Chờ cho Kafka broker khởi động xong
+      kafka:
+        condition: service_healthy  # Chờ cho Kafka broker khởi động xong
+    restart: "no"  # Không restart container khi Kafka broker init thành công
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo ">>> Creating topic ${KAFKA_TOPIC:-retail-rocket-events} ..."  # In ra thông báo tạo topic
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+          --create --if-not-exists \
+          --topic ${KAFKA_TOPIC:-retail-rocket-events} \
+          --partitions ${KAFKA_TOPIC_PARTITIONS:-3} \
+          --replication-factor 1 \
+          --config retention.ms=${KAFKA_TOPIC_RETENTION_MS:-604800000}
+        echo ">>> Topic details:"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+          --describe --topic ${KAFKA_TOPIC:-retail-rocket-events}
+  kafka-ui:  # Khởi động Kafka UI
+    image: provectuslabs/kafka-ui:v0.7.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8085:8080"
+    environment:
+      # Cấu hình Kafka UI
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+      # Cho phép cấu hình động
+
+  producer:  # Khởi động producer, Đọc CSV và gửi event vào Kafka topic
+    build:  # Build producer từ Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile  # Sử dụng Dockerfile để build producer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: "no"
+    stop_grace_period: 25s
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-retail-rocket-events}
+      CSV_PATH: ${CSV_PATH:-/app/data/events_sorted.csv}
+      LIMIT: ${LIMIT:-}
+      SKIP: ${SKIP:-0}
+      SPEEDUP: ${SPEEDUP:-20}
+      MAX_SLEEP: ${MAX_SLEEP:-5}
+      RATE: ${RATE:-10}
+      PROGRESS_EVERY: ${PROGRESS_EVERY:-100}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-15}
+      REORDER_BUFFER: ${REORDER_BUFFER:-0}
+      REORDER_SEED: ${REORDER_SEED:-7}
+    volumes:
+      - ../data:/app/data:ro
+
+  spark-streaming:  # Khởi động Spark streaming, Đọc Kafka, xử lý streaming và ghi kết quả vào output path
+    image: apache/spark:3.5.5
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      spark-checkpoint-init:
+        condition: service_completed_successfully
+      candidate-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-retail-rocket-events}
+      STARTING_OFFSETS: ${STARTING_OFFSETS:-earliest}
+      OUTPUT_PATH: /app/output
+      CHECKPOINT_PATH: /app/checkpoints/intent
+      SESSION_CHECKPOINT_PATH: /app/checkpoints/sessions
+      CONSOLE_CHECKPOINT_PATH: /app/checkpoints/console
+      RAW_CHECKPOINT_PATH: /app/checkpoints/raw_events
+      ARCHIVE_RAW_EVENTS: ${ARCHIVE_RAW_EVENTS:-1}
+      SESSION_GAP: ${SESSION_GAP:-30 minutes}
+      WINDOW_DURATION: ${WINDOW_DURATION:-10 minutes}
+      SLIDE_DURATION: ${SLIDE_DURATION:-5 minutes}
+      WATERMARK: ${WATERMARK:-5 minutes}
+      INTENT_THRESHOLD: ${INTENT_THRESHOLD:-5}
+      TRIGGER_SECONDS: ${TRIGGER_SECONDS:-5}
+      MAX_OFFSETS_PER_TRIGGER: ${MAX_OFFSETS_PER_TRIGGER:-0}
+      CANDIDATES_PATH: /app/data/item_candidates.csv
+      SPARK_LOCAL_IP: 127.0.0.1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mkdir -p /tmp/spark-ivy && exec /opt/spark/bin/spark-submit --master 'local[2]' --conf spark.jars.ivy=/tmp/spark-ivy --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5 /app/src/streaming_etl.py
+    volumes:
+      - ../src:/app/src:ro
+      - ../data:/app/data:ro
+      - ../tests:/app/tests:ro
+      - ${OUTPUT_HOST_DIR:-../output}:/app/output
+      - spark-checkpoints:/app/checkpoints
+
+  candidate-init:  # Khởi động candidate init, Chuẩn bị item_candidates.csv nếu chưa có
+    image: python:3.11-slim-bookworm
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - python /app/build_candidates.py --input /app/data/events_sorted.csv --output /app/data/item_candidates.csv --top-k 1 --ensure-top-one
+    volumes:
+      - ../src/build_candidates.py:/app/build_candidates.py:ro
+      - ../data:/app/data
+
+  spark-checkpoint-init: # Khởi động spark checkpoint init, Chuẩn bị quyền truy cập checkpoint
+    image: alpine:3.20
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R 185:0 /checkpoints"]
+    volumes:
+      - spark-checkpoints:/checkpoints
+
+
+volumes:
+  kafka-data:
+  spark-checkpoints:
+
